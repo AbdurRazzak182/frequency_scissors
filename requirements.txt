@@ -1,0 +1,7 @@
+python libraries: 
+numpy 
+pandas 
+matplotlib 
+scipy 
+librosa 
+soundfile
