@@ -1,7 +1,5 @@
-python libraries: 
+streamlit 
 numpy 
 pandas 
 matplotlib 
 scipy 
-librosa 
-soundfile
