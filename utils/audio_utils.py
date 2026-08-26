@@ -53,6 +53,7 @@ def compute_spectrum(samples: np.ndarray, sr: int):
     return freqs, magnitude_db
 
 
+
 def apply_frequency_cuts(samples: np.ndarray, sr: int, bands: list[dict]) -> np.ndarray:
     """
     Apply a list of frequency-band "scissor cuts" in the frequency domain
@@ -142,4 +143,5 @@ def compute_peaks(samples: np.ndarray, num_points: int = 400) -> list:
     max_val = max(peaks) if peaks else 1.0
     if max_val <= 0:
         max_val = 1.0
-    return [p / max_val for p in peaks]
+    l = [p / max_val for p in peaks]
+    return l

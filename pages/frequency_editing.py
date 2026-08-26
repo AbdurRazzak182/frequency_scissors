@@ -89,16 +89,29 @@ with st.sidebar:
 # ----------------------------------------------------------------------
 st.subheader("1. Waveform & Spectrum")
 
-wave_col, spec_col = st.columns(2)
 
-with wave_col:
-    st.markdown("**Waveform**")
-    waveform_box = st.container(border=True)
-with spec_col:
-    st.markdown("**Frequency Spectrum**")
-    spectrum_box = st.container(border=True)
+st.markdown("**Waveform**")
+waveform_box = st.container(border=True)
 
-spectrum_selection_event = None
+st.markdown("**Frequency Spectrum**")
+spectrum_box = st.container(border=True)
+
+spectrum_selection_event = None 
+
+def resample_log_uniform(freqs, magnitude_db, n_points=2048, f_min=20.0):
+    """
+    Resample a linearly-spaced FFT spectrum onto a log-uniform frequency grid.
+    Useful for smooth, visually even plots on a log x-axis.
+
+    f_min: lowest frequency to include (avoid 0 Hz, which breaks log scale)
+    """
+    f_max = freqs[-1]
+    log_freqs = np.logspace(np.log10(f_min), np.log10(f_max), n_points)
+
+    # Interpolate magnitude (in dB) onto the new log-spaced grid
+    magnitude_db_interp = np.interp(log_freqs, freqs, magnitude_db)
+
+    return log_freqs, magnitude_db_interp 
 
 if st.session_state.raw_audio is None:
     with waveform_box:
@@ -124,14 +137,20 @@ else:
         st.plotly_chart(wave_fig, use_container_width=True, key="waveform_plot")
 
     freqs, mag_db = audio_utils.compute_spectrum(samples, sr)
+    log_freqs, log_mag_db = resample_log_uniform(freqs, mag_db)
     spec_fig = go.Figure()
-    spec_fig.add_trace(go.Scattergl(x=freqs, y=mag_db, mode="lines",
+    spec_fig.add_trace(go.Scattergl(x=log_freqs, y=log_mag_db, mode="lines",
                                      line=dict(color="#f59e0b", width=1)))
     spec_fig.update_layout(
-        height=280, margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="Frequency (Hz)", yaxis_title="Magnitude (dB)",
-        xaxis_type="log", template="plotly_dark",
-    )
+    height=280, margin=dict(l=10, r=10, t=10, b=10),
+    xaxis_title="Frequency (Hz)", yaxis_title="Magnitude (dB)",
+    xaxis=dict(
+        type="log",
+        dtick=1,           # one labeled tick per decade (10, 100, 1000, 10000...)
+        tickformat="~s",   # SI-style suffix: 100, 1k, 10k
+    ),
+    template="plotly_dark",
+)
     with spectrum_box:
         st.caption("Tip: drag a box on the spectrum below to pick a frequency band to cut.")
         spectrum_selection_event = st.plotly_chart(
