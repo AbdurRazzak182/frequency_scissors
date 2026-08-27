@@ -1,4 +1,4 @@
-
+import io
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -53,7 +53,6 @@ def compute_spectrum(samples: np.ndarray, sr: int):
     return freqs, magnitude_db
 
 
-
 def apply_frequency_cuts(samples: np.ndarray, sr: int, bands: list[dict]) -> np.ndarray:
     """
     Apply a list of frequency-band "scissor cuts" in the frequency domain
@@ -79,12 +78,69 @@ def apply_frequency_cuts(samples: np.ndarray, sr: int, bands: list[dict]) -> np.
 
     processed = np.fft.irfft(processed_fft, n=n).astype(np.float32)
 
-    # Prevent clipping after amplification, keep silence as silence
     peak = np.max(np.abs(processed)) if len(processed) else 0.0
     if peak > 1.0:
         processed = processed / peak
 
     return processed
+
+
+def apply_band_operation(
+    samples: np.ndarray,
+    sr: int,
+    low: float,
+    high: float,
+    operation: str,
+    gain: float = 1.0,
+) -> np.ndarray:
+    """
+    Apply ONE scissor operation to a single selected frequency band
+    [low, high] Hz and rebuild the waveform with the inverse FFT.
+
+    operation:
+        "remove"     -> zero out everything INSIDE the band (band-stop)
+        "isolate"    -> zero out everything OUTSIDE the band (band-pass)
+        "attenuate"  -> multiply the band by `gain` (expected 0.0 - 1.0)
+        "amplify"    -> multiply the band by `gain` (expected >= 1.0)
+    """
+    n = len(samples)
+    fft_vals = np.fft.rfft(samples)
+    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
+
+    low, high = sorted((float(low), float(high)))
+    mask = (freqs >= low) & (freqs <= high)
+
+    processed_fft = fft_vals.copy()
+
+    if operation == "remove":
+        processed_fft[mask] = 0.0
+    elif operation == "isolate":
+        processed_fft[~mask] = 0.0
+    elif operation == "attenuate":
+        g = float(np.clip(gain, 0.0, 1.0))
+        processed_fft[mask] *= g
+    elif operation == "amplify":
+        g = max(float(gain), 1.0)
+        processed_fft[mask] *= g
+    else:
+        raise ValueError(f"Unknown operation: {operation!r}")
+
+    processed = np.fft.irfft(processed_fft, n=n).astype(np.float32)
+
+    peak = np.max(np.abs(processed)) if len(processed) else 0.0
+    if peak > 1.0:
+        processed = processed / peak
+
+    return processed
+
+
+def samples_to_wav_bytes(samples: np.ndarray, sr: int) -> bytes:
+    """
+    Encode a float32 NumPy array as an in-memory 16-bit PCM WAV file.
+    """
+    buf = io.BytesIO()
+    sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
 
 
 def save_wav(samples: np.ndarray, sr: int, path) -> None:

@@ -39,20 +39,17 @@ st.write(
 
 st.header("📁 Project Progression")
 st.info(
-    "👉**Phase 1 · Data Ingestion & Time-Domain Visualization."
+    "✅**Phase 1 · Data Ingestion & (Time,Frequency)-Domain Visualization."
 )
 
 st.info(
-    "❌**Phase 2 ·The Mathematical Engine (STFT)."
+    "❌ **Phase 2 · The Interactive Scissors (UI)."
 )
 st.info(
-    "❌ **Phase 3 · The Interactive Scissors (UI)."
+    "❌ **Phase 3 · Reconstruction & changed frequency spectrum visualization with the listening again."
 )
 st.info(
-    "❌ **Phase 4 · Reconstruction & Artifact Management."
-)
-st.info(
-    "❌ **Phase 5 · Testing & Output."
+    "❌ **Phase 4 · Comparing with the original ,waveform plots,spectra,demonstration ,Testing & Output."
 )
 
 st.header("👋 About Developers")

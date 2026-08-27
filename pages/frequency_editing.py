@@ -3,10 +3,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import audio_utils, storage, audio_player
+from utils import audio_utils, storage, audio_player 
 
 st.set_page_config(page_title="Phase 1 · Frequency Cutting", page_icon="🎛️", layout="wide")
-st.title("🎛️ Phase 1 — Frequency Cutting Workspace")
+st.title("🎛️ Wave Visualization & Frequency Cutting Workspace") 
 
 # ----------------------------------------------------------------------
 # Session state initialisation 
@@ -87,7 +87,12 @@ with st.sidebar:
 # ----------------------------------------------------------------------
 # Waveform + Spectrum boxes (empty state when nothing is loaded)
 # ----------------------------------------------------------------------
-st.subheader("1. Waveform & Spectrum")
+
+col1, col2 = st.columns([3, 5], vertical_alignment="bottom")
+with col1:
+    st.subheader("1. Waveform & Spectrum")
+with col2:
+    st.badge(choice, color="blue")
 
 
 st.markdown("**Waveform**")
@@ -95,6 +100,7 @@ waveform_box = st.container(border=True)
 
 st.markdown("**Frequency Spectrum**")
 spectrum_box = st.container(border=True)
+player_box = st.container(border=True)
 
 spectrum_selection_event = None 
 
@@ -164,12 +170,160 @@ else:
 # ----------------------------------------------------------------------
 # 2. Playback of the ORIGINAL audio, with a playhead synced to the waveform
 # ----------------------------------------------------------------------
+with player_box:
+    if st.session_state.raw_audio is not None:
+        st.subheader("2. Listen to the Original")
+        peaks = audio_utils.compute_peaks(st.session_state.raw_audio, num_points=400)
+        audio_player.render_audio_player(
+            st.session_state.audio_bytes,
+            st.session_state.filename,
+            peaks,
+            key="original",
+        )
+
+
+
+# ----------------------------------------------------------------------
+# 3. The Scissors — an editable spectrum you drag a box on, plus the
+#    four cutting operations. Applying one runs the IFFT and shows the
+#    modified spectrum + a player for the modified audio.
+# ----------------------------------------------------------------------
 if st.session_state.raw_audio is not None:
-    st.subheader("2. Listen to the Original")
-    peaks = audio_utils.compute_peaks(st.session_state.raw_audio, num_points=400)
-    audio_player.render_audio_player(
-        st.session_state.audio_bytes,
-        st.session_state.filename,
-        peaks,
-        key="original",
+    st.subheader("3. Edit the Frequency Spectrum")
+    st.caption(
+        "Drag a box on the spectrum below to select a frequency band, "
+        "choose an operation, then apply it."
     )
+
+    edit_box = st.container(border=True)
+    samples = st.session_state.raw_audio
+    sr = st.session_state.sr
+    nyquist = sr / 2.0
+
+    with edit_box:
+        # --- the editable, box-selectable spectrum ---
+        edit_freqs, edit_mag_db = audio_utils.compute_spectrum(samples, sr)
+        edit_log_freqs, edit_log_mag_db = resample_log_uniform(edit_freqs, edit_mag_db)
+
+        edit_fig = go.Figure()
+        edit_fig.add_trace(go.Scattergl(
+            x=edit_log_freqs, y=edit_log_mag_db, mode="lines",
+            line=dict(color="#38bdf8", width=1),
+        ))
+        edit_fig.update_layout(
+            height=280, margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_title="Frequency (Hz)", yaxis_title="Magnitude (dB)",
+            xaxis=dict(type="log", dtick=1, tickformat="~s"),
+            dragmode="select",
+            template="plotly_dark",
+        )
+        edit_selection_event = st.plotly_chart(
+            edit_fig,
+            use_container_width=True,
+            key="edit_spectrum_plot",
+            on_select="rerun",
+            selection_mode=("box",),
+        )
+
+        # --- pull the dragged box's x-range (Hz) out of the select event ---
+        low_sel, high_sel = None, None
+        if edit_selection_event is not None:
+            boxes = edit_selection_event.get("selection", {}).get("box", [])
+            if boxes:
+                x_range = boxes[0].get("x", [])
+                if len(x_range) == 2:
+                    low_sel, high_sel = sorted(float(v) for v in x_range)
+                    low_sel = max(low_sel, 0.0)
+                    high_sel = min(high_sel, nyquist)
+
+        if low_sel is None:
+            st.info("No band selected yet — drag a box on the spectrum above.")
+        else:
+            st.markdown(f"**Selected band:** `{low_sel:,.1f} Hz` → `{high_sel:,.1f} Hz`")
+
+            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+
+            with ctrl_col1:
+                operation = st.selectbox(
+                    "Operation",
+                    options=["Remove band", "Isolate band", "Attenuate band", "Amplify band"],
+                    key="scissor_operation",
+                )
+
+            op_key = {
+                "Remove band": "remove",
+                "Isolate band": "isolate",
+                "Attenuate band": "attenuate",
+                "Amplify band": "amplify",
+            }[operation]
+
+            gain = 1.0
+            with ctrl_col2:
+                if op_key == "attenuate":
+                    gain = st.slider(
+                        "Attenuation (fraction of original amplitude kept)",
+                        min_value=0.0, max_value=1.0, value=0.3, step=0.05,
+                        key="attenuate_gain",
+                    )
+                elif op_key == "amplify":
+                    gain = st.slider(
+                        "Amplification factor",
+                        min_value=1.0, max_value=10.0, value=2.0, step=0.5,
+                        key="amplify_gain",
+                    )
+                else:
+                    st.caption("No gain parameter needed for this operation.")
+
+            with ctrl_col3:
+                apply_clicked = st.button("✂️ Apply", use_container_width=True, type="primary")
+
+            if apply_clicked:
+                processed = audio_utils.apply_band_operation(
+                    samples, sr, low_sel, high_sel, op_key, gain=gain,
+                )
+                st.session_state.processed_audio = processed
+                st.session_state.processed_bytes = audio_utils.samples_to_wav_bytes(processed, sr)
+                st.session_state.bands.append(
+                    {"low": low_sel, "high": high_sel, "operation": op_key, "gain": gain}
+                )
+                st.rerun()
+
+    # --- results: modified spectrum + modified audio player ---
+    if st.session_state.processed_audio is not None:
+        st.markdown("**Modified Frequency Spectrum**")
+        result_spectrum_box = st.container(border=True)
+        result_player_box = st.container(border=True)
+
+        with result_spectrum_box:
+            proc_freqs, proc_mag_db = audio_utils.compute_spectrum(
+                st.session_state.processed_audio, sr
+            )
+            proc_log_freqs, proc_log_mag_db = resample_log_uniform(proc_freqs, proc_mag_db)
+            proc_fig = go.Figure()
+            proc_fig.add_trace(go.Scattergl(
+                x=proc_log_freqs, y=proc_log_mag_db, mode="lines",
+                line=dict(color="#f43f5e", width=1),
+            ))
+            proc_fig.update_layout(
+                height=280, margin=dict(l=10, r=10, t=10, b=10),
+                xaxis_title="Frequency (Hz)", yaxis_title="Magnitude (dB)",
+                xaxis=dict(type="log", dtick=1, tickformat="~s"),
+                template="plotly_dark",
+            )
+            st.plotly_chart(proc_fig, use_container_width=True, key="processed_spectrum_plot")
+
+        with result_player_box:
+            st.subheader("4. Listen to the Modified Audio")
+            proc_peaks = audio_utils.compute_peaks(st.session_state.processed_audio, num_points=400)
+            audio_player.render_audio_player(
+                st.session_state.processed_bytes,
+                f"processed_{st.session_state.filename}",
+                proc_peaks,
+                key="processed",
+            )
+
+        if st.button("↺ Reset to original (clear all cuts)"):
+            _reset_processed()
+            st.session_state.bands = []
+            st.rerun()
+
