@@ -11,11 +11,7 @@ except Exception:  # pydub / ffmpeg might not be installed
 
 
 def load_audio(file_path) -> tuple[np.ndarray, int]:
-    """
-    Load an audio file (wav/flac/ogg natively, mp3/m4a/... via pydub+ffmpeg)
-    and return (samples, sample_rate) where samples is a mono float32
-    NumPy array normalized to roughly [-1, 1].
-    """
+
     file_path = Path(file_path)
     try:
         data, sr = sf.read(str(file_path), dtype="float32", always_2d=False)
@@ -44,7 +40,6 @@ def get_duration(samples: np.ndarray, sr: int) -> float:
 
 
 def compute_spectrum(samples: np.ndarray, sr: int):
-    """Return (freqs_hz, magnitude_db) using a real FFT of the whole clip."""
     n = len(samples)
     fft_vals = np.fft.rfft(samples)
     freqs = np.fft.rfftfreq(n, d=1.0 / sr)
@@ -53,91 +48,8 @@ def compute_spectrum(samples: np.ndarray, sr: int):
     return freqs, magnitude_db
 
 
-def apply_frequency_cuts(samples: np.ndarray, sr: int, bands: list[dict]) -> np.ndarray:
-    """
-    Apply a list of frequency-band "scissor cuts" in the frequency domain
-    and reconstruct the audio with the inverse FFT.
-
-    bands: list of {"low": float_hz, "high": float_hz, "gain": float}
-        gain = 0.0  -> completely cut (band-stop)
-        gain < 1.0  -> attenuate
-        gain > 1.0  -> amplify
-        gain = 1.0  -> unchanged
-    """
-    n = len(samples)
-    fft_vals = np.fft.rfft(samples)
-    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
-
-    processed_fft = fft_vals.copy()
-    for band in bands:
-        low = float(band["low"])
-        high = float(band["high"])
-        gain = float(band["gain"])
-        mask = (freqs >= low) & (freqs <= high)
-        processed_fft[mask] *= gain
-
-    processed = np.fft.irfft(processed_fft, n=n).astype(np.float32)
-
-    peak = np.max(np.abs(processed)) if len(processed) else 0.0
-    if peak > 1.0:
-        processed = processed / peak
-
-    return processed
-
-
-def apply_band_operation(
-    samples: np.ndarray,
-    sr: int,
-    low: float,
-    high: float,
-    operation: str,
-    gain: float = 1.0,
-) -> np.ndarray:
-    """
-    Apply ONE scissor operation to a single selected frequency band
-    [low, high] Hz and rebuild the waveform with the inverse FFT.
-
-    operation:
-        "remove"     -> zero out everything INSIDE the band (band-stop)
-        "isolate"    -> zero out everything OUTSIDE the band (band-pass)
-        "attenuate"  -> multiply the band by `gain` (expected 0.0 - 1.0)
-        "amplify"    -> multiply the band by `gain` (expected >= 1.0)
-    """
-    n = len(samples)
-    fft_vals = np.fft.rfft(samples)
-    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
-
-    low, high = sorted((float(low), float(high)))
-    mask = (freqs >= low) & (freqs <= high)
-
-    processed_fft = fft_vals.copy()
-
-    if operation == "remove":
-        processed_fft[mask] = 0.0
-    elif operation == "isolate":
-        processed_fft[~mask] = 0.0
-    elif operation == "attenuate":
-        g = float(np.clip(gain, 0.0, 1.0))
-        processed_fft[mask] *= g
-    elif operation == "amplify":
-        g = max(float(gain), 1.0)
-        processed_fft[mask] *= g
-    else:
-        raise ValueError(f"Unknown operation: {operation!r}")
-
-    processed = np.fft.irfft(processed_fft, n=n).astype(np.float32)
-
-    peak = np.max(np.abs(processed)) if len(processed) else 0.0
-    if peak > 1.0:
-        processed = processed / peak
-
-    return processed
-
 
 def samples_to_wav_bytes(samples: np.ndarray, sr: int) -> bytes:
-    """
-    Encode a float32 NumPy array as an in-memory 16-bit PCM WAV file.
-    """
     buf = io.BytesIO()
     sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
     return buf.getvalue()
@@ -148,11 +60,6 @@ def save_wav(samples: np.ndarray, sr: int, path) -> None:
 
 
 def downsample_waveform(samples: np.ndarray, sr: int, max_points: int = 3000):
-    """
-    Min/max envelope downsampling so long clips still render a faithful
-    waveform shape quickly. Returns (time_seconds, values) arrays where
-    values alternate low/high per bin, ready for a line/area plot.
-    """
     n = len(samples)
     if n <= max_points:
         t = np.arange(n) / sr
@@ -179,10 +86,6 @@ def downsample_waveform(samples: np.ndarray, sr: int, max_points: int = 3000):
 
 
 def compute_peaks(samples: np.ndarray, num_points: int = 400) -> list:
-    """
-    Compute a normalized (0..1) amplitude envelope for the mini waveform
-    drawn on the <canvas> playhead widget.
-    """
     n = len(samples)
     if n == 0:
         return [0.0] * num_points
