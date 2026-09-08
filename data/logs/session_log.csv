@@ -1,0 +1,4 @@
+timestamp,source_filename,sample_rate,duration_sec,num_bands,bands_applied,processed_filename
+2026-09-08T23:58:10,car.mp3,48000,18.72,0,[],
+2026-09-09T00:18:25,car.mp3,48000,18.72,0,[],
+2026-09-09T00:53:32,car.mp3,48000,18.72,0,[],
