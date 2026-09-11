@@ -201,3 +201,32 @@ def compute_peaks(samples: np.ndarray, num_points: int = 400) -> list:
         max_val = 1.0
     l = [p / max_val for p in peaks]
     return l
+
+
+def generate_composite_signal(components: list[dict], duration: float = 2.0, sr: int = 44100) -> np.ndarray:
+    """
+    Generate a signal by combining multiple frequencies.
+    components: list of {"freq": float, "amplitude": float, "phase": float, "wave_type": str}
+    """
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    composite = np.zeros_like(t)
+
+    for comp in components:
+        freq = comp.get("freq", 440.0)
+        amp = comp.get("amplitude", 1.0)
+        phase = comp.get("phase", 0.0)
+        wave_type = comp.get("wave_type", "sine")
+
+        if wave_type == "cosine":
+            wave = amp * np.cos(2 * np.pi * freq * t + phase)
+        elif wave_type == "square":
+            wave = amp * np.sign(np.sin(2 * np.pi * freq * t + phase))
+        else:
+            wave = amp * np.sin(2 * np.pi * freq * t + phase)
+
+        composite += wave
+
+    peak = np.max(np.abs(composite))
+    if peak > 1.0: composite = composite / peak
+
+    return composite.astype(np.float32)    
