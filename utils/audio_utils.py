@@ -203,30 +203,79 @@ def compute_peaks(samples: np.ndarray, num_points: int = 400) -> list:
     return l
 
 
-def generate_composite_signal(components: list[dict], duration: float = 2.0, sr: int = 44100) -> np.ndarray:
+
+
+def mix_audio_files(
+    tracks: list[dict], target_sr: int = 44100
+) -> np.ndarray:
     """
-    Generate a signal by combining multiple frequencies.
-    components: list of {"freq": float, "amplitude": float, "phase": float, "wave_type": str}
+    Mix multiple audio clips into a single normalized composite signal.
+    Correctly aligns sample lengths and balances gains across all tracks.
     """
-    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    composite = np.zeros_like(t)
+    if not tracks:
+        return np.array([], dtype=np.float32)
 
-    for comp in components:
-        freq = comp.get("freq", 440.0)
-        amp = comp.get("amplitude", 1.0)
-        phase = comp.get("phase", 0.0)
-        wave_type = comp.get("wave_type", "sine")
+    loaded_signals = []
 
-        if wave_type == "cosine":
-            wave = amp * np.cos(2 * np.pi * freq * t + phase)
-        elif wave_type == "square":
-            wave = amp * np.sign(np.sin(2 * np.pi * freq * t + phase))
-        else:
-            wave = amp * np.sin(2 * np.pi * freq * t + phase)
+    for trk in tracks:
+        path = trk["path"]
+        gain = float(trk.get("gain", 1.0))
+        
+        # Load audio using existing load_audio pipeline
+        samples, sr = load_audio(path)
+        
+        # Proper length-preserving resampling if sample rates differ
+        if sr != target_sr:
+            num_target_samples = int(round(len(samples) * float(target_sr) / float(sr)))
+            old_indices = np.linspace(0, len(samples) - 1, num=len(samples))
+            new_indices = np.linspace(0, len(samples) - 1, num=num_target_samples)
+            samples = np.interp(new_indices, old_indices, samples).astype(np.float32)
 
-        composite += wave
+        # Apply track-specific volume multiplier
+        samples = samples * gain
+        loaded_signals.append(samples)
 
+    if not loaded_signals:
+        return np.array([], dtype=np.float32)
+
+    # Find maximum duration among loaded tracks
+    max_len = max(len(s) for s in loaded_signals)
+
+    # Allocate a zero-filled composite buffer of the maximum length
+    composite = np.zeros(max_len, dtype=np.float32)
+
+    # Sum signals into the buffer simultaneously starting from t = 0
+    for sig in loaded_signals:
+        composite[:len(sig)] += sig
+
+    # Soft peak normalization to prevent distortion while preserving relative volumes
     peak = np.max(np.abs(composite))
-    if peak > 1.0: composite = composite / peak
+    if peak > 1.0:
+        composite = composite / peak
 
-    return composite.astype(np.float32)    
+    return composite.astype(np.float32)
+
+def samples_to_mp3_bytes(samples: np.ndarray, sr: int) -> bytes:
+    """
+    Encode a float32 NumPy array into MP3 bytes using pydub/soundfile.
+    Falls back to WAV container if MP3 encoder is missing on target system.
+    """
+    buf = io.BytesIO()
+    try:
+        if _HAS_PYDUB:
+            # Convert float32 array (-1.0 to 1.0) to int16 PCM
+            pcm_data = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+            segment = AudioSegment(
+                pcm_data.tobytes(),
+                frame_rate=sr,
+                sample_width=2,
+                channels=1
+            )
+            segment.export(buf, format="mp3", bitrate="192k")
+            return buf.getvalue()
+    except Exception:
+        pass
+
+    # Fallback export via soundfile WAV encoding
+    sf.write(buf, samples, sr, format="WAV", subtype="PCM_16")
+    return buf.getvalue()   
