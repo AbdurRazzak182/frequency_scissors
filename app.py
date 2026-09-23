@@ -43,13 +43,13 @@ st.info(
 )
 
 st.info(
-    "❌ **Phase 2 · The Interactive Scissors (UI)."
+    "✅ **Phase 2 · The Interactive Scissors (UI)."
 )
 st.info(
-    "❌ **Phase 3 · Reconstruction & changed frequency spectrum visualization with the listening again."
+    "✅ **Phase 3 · Reconstruction & changed frequency spectrum visualization with the listening again."
 )
 st.info(
-    "❌ **Phase 4 · Comparing with the original ,waveform plots,spectra,demonstration ,Testing & Output."
+    "✅ **Phase 4 · Comparing with the original ,waveform plots,spectra,demonstration ,Testing & Output."
 )
 
 st.header("👋 About Developers")
