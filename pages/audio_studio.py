@@ -103,18 +103,32 @@ div[data-testid="stVerticalBlockBorderWrapper"]{
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------
-# Session state — VERSION HISTORY of the working clip. Editing tools
-# always act on the latest version; the player can preview any version.
+# Session state — VERSION TREE of the working clip. Editing tools act
+# ONLY on whichever version is currently selected in the player below —
+# pick any version there and the next operation branches off of it.
+# Version names accumulate the chain of operations applied, e.g.
+#   alarm.mp3(v_0) -> +white noise -> alarm+white_noise.mp3(v_1)
+#                   -> +amplify 300-500Hz -> alarm+white_noise+300-500hz_amplified.mp3(v_2)
+# and selecting an earlier version (say v_1) and adding pink noise branches
+# a new version off of it: alarm+white_noise+pink_noise.mp3(v_3).
 # ----------------------------------------------------------------------
 defaults = {
     "studio_filename": None,
-    "studio_versions": [],          # list of {label, audio, sr, bytes}
+    "studio_base_name": None,       # original clip name, no extension, e.g. "alarm"
+    "studio_ext": "",               # original clip extension, e.g. ".mp3"
+    "studio_versions": [],          # list of {label, name, audio, sr, bytes, version_num, parent_label}
     "studio_next_version_num": 0,
     "noise_report": None,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+NOISE_SUFFIX = {
+    "white": "white_noise", "pink": "pink_noise", "hum": "hum_noise",
+    "white+hum": "white_hum_noise", "drift": "drift_noise", "burst": "burst_noise",
+}
+BAND_OP_SUFFIX = {"remove": "removed", "isolate": "isolated", "attenuate": "attenuated", "amplify": "amplified"}
 
 
 def resample_log_uniform(freqs, magnitude_db, n_points=2048, f_min=20.0):
@@ -123,14 +137,28 @@ def resample_log_uniform(freqs, magnitude_db, n_points=2048, f_min=20.0):
     return log_freqs, np.interp(log_freqs, freqs, magnitude_db)
 
 
-def _current():
+def _selected():
+    """The version currently chosen in the player — this is the ONLY
+    version the next editing operation will act on."""
+    label = st.session_state.get("studio_version_select")
+    for v in st.session_state.studio_versions:
+        if v["label"] == label:
+            return v
     return st.session_state.studio_versions[-1]
 
 
-def _add_version(label_suffix: str, audio: np.ndarray, sr: int, action_type: str, details: dict):
+def _add_version(suffix: str, audio: np.ndarray, sr: int, action_type: str, details: dict, parent: dict = None):
+    parent = parent or _selected()
     num = st.session_state.studio_next_version_num
-    label = f"v{num} · {label_suffix}"
-    entry = {"label": label, "audio": audio, "sr": sr, "bytes": audio_utils.samples_to_wav_bytes(audio, sr)}
+    ext = st.session_state.studio_ext
+    new_name = f"{parent['name']}+{suffix}"
+    label = f"{new_name}{ext}(v_{num})"
+
+    entry = {
+        "label": label, "name": new_name, "audio": audio, "sr": sr,
+        "bytes": audio_utils.samples_to_wav_bytes(audio, sr),
+        "version_num": num, "parent_label": parent["label"],
+    }
     st.session_state.studio_versions.append(entry)
     st.session_state.studio_next_version_num += 1
 
@@ -139,7 +167,7 @@ def _add_version(label_suffix: str, audio: np.ndarray, sr: int, action_type: str
         source_filename=st.session_state.studio_filename,
         sample_rate=sr,
         duration_sec=audio_utils.get_duration(audio, sr),
-        details=details,
+        details={**details, "based_on": parent["label"]},
     )
     st.session_state["studio_version_select"] = label
     st.session_state.noise_report = None
@@ -147,14 +175,20 @@ def _add_version(label_suffix: str, audio: np.ndarray, sr: int, action_type: str
 
 def _load_clip(path, display_name):
     samples, sr = audio_utils.load_audio(path)
+    base_name, ext = Path(display_name).stem, (Path(display_name).suffix or ".wav")
+    v0_label = f"{base_name}{ext}(v_0)"
+
     st.session_state.studio_filename = display_name
+    st.session_state.studio_base_name = base_name
+    st.session_state.studio_ext = ext
     st.session_state.studio_versions = [{
-        "label": "v0 · Original", "audio": samples, "sr": sr,
+        "label": v0_label, "name": base_name, "audio": samples, "sr": sr,
         "bytes": audio_utils.samples_to_wav_bytes(samples, sr),
+        "version_num": 0, "parent_label": None,
     }]
     st.session_state.studio_next_version_num = 1
     st.session_state.noise_report = None
-    st.session_state["studio_version_select"] = "v0 · Original"
+    st.session_state["studio_version_select"] = v0_label
     logging_utils.log_action("load", display_name, sr, audio_utils.get_duration(samples, sr), {})
 
 
@@ -226,15 +260,15 @@ if st.session_state.get("studio_version_select") not in version_labels:
 # MAIN CONTENT — live spectrum of whatever's selected in the player,
 # then the loop-able tool tabs, then the player.
 # ----------------------------------------------------------------------
-selected = next(v for v in st.session_state.studio_versions if v["label"] == st.session_state["studio_version_select"])
+selected = _selected()
 
 with st.container(border=True):
     st.markdown(f"**📊 Spectrum — `{selected['label']}`**")
     st.plotly_chart(_spectrum_fig(selected["audio"], selected["sr"], "#38bdf8"), use_container_width=True, key="studio_top_spectrum")
 
-st.caption(
-    f"🛠️ Editing tools below always act on the **latest** version (`{version_labels[-1]}`) — "
-    "pick any version in the player under the tools just to listen to it."
+st.info(
+    f"🎯 Editing base: **`{selected['label']}`** — every tool below acts on this version. "
+    "Pick a different version in the player under the tools to branch a new edit off of it."
 )
 
 tab_edit, tab_add_noise, tab_denoise, tab_mix = st.tabs(
@@ -243,7 +277,8 @@ tab_edit, tab_add_noise, tab_denoise, tab_mix = st.tabs(
 
 # ============================ TAB 1: Frequency Edit ============================
 with tab_edit:
-    cur = _current()
+    cur = _selected()
+    st.caption(f"Editing: `{cur['label']}`")
     samples, sr = cur["audio"], cur["sr"]
     nyquist = sr / 2.0
 
@@ -292,8 +327,10 @@ with tab_edit:
 
     if apply_clicked and low_sel is not None:
         processed = audio_utils.apply_band_operation(samples, sr, low_sel, high_sel, op_key, gain=gain)
-        _add_version(f"{operation} {low_sel:,.0f}-{high_sel:,.0f}Hz", processed, sr,
-                     "frequency_edit", {"operation": op_key, "low": low_sel, "high": high_sel, "gain": gain})
+        suffix = f"{low_sel:.0f}-{high_sel:.0f}hz_{BAND_OP_SUFFIX[op_key]}"
+        _add_version(suffix, processed, sr,
+                     "frequency_edit", {"operation": op_key, "low": low_sel, "high": high_sel, "gain": gain},
+                     parent=cur)
         st.rerun()
 
 # ============================ TAB 2: Add Noise ============================
@@ -319,25 +356,29 @@ with tab_add_noise:
     with n4:
         add_clicked = st.button("🔊 Add", use_container_width=True, type="primary", key="n_add")
 
+    cur = _selected()
+    st.caption(f"Editing: `{cur['label']}`")
+
     if add_clicked:
-        cur = _current()
         noisy = audio_utils.add_noise(cur["audio"], cur["sr"], noise_type=noise_type, snr_db=snr_db,
                                        hum_freq=hum_freq, n_bursts=n_bursts, burst_duration_ms=burst_ms)
-        _add_version(f"+{noise_label} noise", noisy, cur["sr"], "noise_add",
-                     {"noise_type": noise_type, "snr_db": snr_db, "hum_freq": hum_freq})
+        _add_version(NOISE_SUFFIX[noise_type], noisy, cur["sr"], "noise_add",
+                     {"noise_type": noise_type, "snr_db": snr_db, "hum_freq": hum_freq}, parent=cur)
         st.rerun()
 
-    st.caption("Only needed for testing — adds noise on top of the latest version above.")
+    st.caption("Only needed for testing — adds noise on top of the version selected in the player.")
 
 # ============================ TAB 3: Detect & Remove Noise ============================
 with tab_denoise:
+    cur = _selected()
+    st.caption(f"Editing: `{cur['label']}`")
+
     method_label = st.radio("Noise estimate", ["Automatic", "Adaptive (drifting)", "Manual region"],
                              horizontal=True, key="d_method")
     profile_method = {"Automatic": "auto", "Adaptive (drifting)": "adaptive", "Manual region": "region"}[method_label]
 
     noise_start, noise_end = 0.0, None
     if profile_method == "region":
-        cur = _current()
         total_dur = audio_utils.get_duration(cur["audio"], cur["sr"])
         rc1, rc2 = st.columns(2)
         with rc1:
@@ -352,7 +393,6 @@ with tab_denoise:
         analyze_clicked = st.button("🔍 Analyze", use_container_width=True, key="d_analyze")
 
     if analyze_clicked:
-        cur = _current()
         st.session_state.noise_report = audio_utils.analyze_noise(
             cur["audio"], cur["sr"], method=profile_method, noise_start=noise_start,
             noise_end=noise_end, transient_sensitivity=sensitivity,
@@ -377,19 +417,21 @@ with tab_denoise:
         remove_clicked = st.button("🧹 Remove", use_container_width=True, type="primary", key="d_remove")
 
     if remove_clicked:
-        cur = _current()
         denoised = audio_utils.reduce_noise(
             cur["audio"], cur["sr"], profile_method=profile_method, noise_start=noise_start, noise_end=noise_end,
             reduction_strength=strength, floor=floor, suppress_transients=suppress_transients,
             transient_sensitivity=sensitivity,
         )
-        _add_version(f"denoise ({profile_method})", denoised, cur["sr"], "noise_remove",
+        _add_version(f"denoised_{profile_method}", denoised, cur["sr"], "noise_remove",
                      {"profile_method": profile_method, "reduction_strength": strength, "floor": floor,
-                      "suppress_transients": suppress_transients})
+                      "suppress_transients": suppress_transients}, parent=cur)
         st.rerun()
 
 # ============================ TAB 4: Mix ============================
 with tab_mix:
+    cur = _selected()
+    st.caption(f"Editing: `{cur['label']}`")
+
     other_files = [f for f in storage.list_uploaded_files() if f != st.session_state.studio_filename]
     if not other_files:
         st.info("No other clips in the workspace to mix in — upload one from the sidebar.")
@@ -403,12 +445,13 @@ with tab_mix:
             mix_clicked = st.button("🎚️ Mix", use_container_width=True, type="primary", key="m_apply")
 
         if mix_clicked:
-            cur = _current()
             tmp_path = storage.PROCESSED_DIR / "_studio_working_tmp.wav"
             audio_utils.save_wav(cur["audio"], cur["sr"], tmp_path)
             tracks = [{"path": tmp_path, "gain": 1.0}, {"path": storage.uploaded_file_path(mix_choice), "gain": mix_gain}]
             mixed = audio_utils.mix_audio_files(tracks, target_sr=44100)
-            _add_version(f"+mix {mix_choice}", mixed, 44100, "mix", {"mixed_with": mix_choice, "gain": mix_gain})
+            mix_base = Path(mix_choice).stem
+            _add_version(f"mix_{mix_base}", mixed, 44100, "mix",
+                         {"mixed_with": mix_choice, "gain": mix_gain}, parent=cur)
             st.rerun()
 
 # ----------------------------------------------------------------------
@@ -422,19 +465,21 @@ if st.session_state.get("studio_version_select") not in version_labels:
 with st.container(border=True, key="player_panel"):
     bar1, bar3 = st.columns([3, 1.4], vertical_alignment="bottom")
     with bar1:
-        st.selectbox("🎧 Now Playing", options=version_labels, key="studio_version_select")
-    selected = next(v for v in st.session_state.studio_versions if v["label"] == st.session_state["studio_version_select"])
-    version_tag = selected["label"].split(" · ")[0]
+        st.selectbox("🎧 Now Playing — also the editing base for the tools above",
+                     options=version_labels, key="studio_version_select")
+    selected = _selected()
+    st.caption(f"Selected clip: **`{selected['label']}`**")
+    version_tag = f"v_{selected['version_num']}"
 
     with bar3:
         dcol1, dcol2 = st.columns(2)
         with dcol1:
             st.download_button("⬇️ Download", data=selected["bytes"],
-                                file_name=f"{st.session_state.studio_filename}_{version_tag}.wav",
+                                file_name=f"{selected['name']}_{version_tag}.wav",
                                 mime="audio/wav", use_container_width=True, key="player_dl")
         with dcol2:
             if st.button("💾 Save", use_container_width=True, key="player_save"):
-                target = storage.UPLOADS_DIR / f"studio_{version_tag}_{st.session_state.studio_filename}.wav"
+                target = storage.UPLOADS_DIR / f"{selected['name']}_{version_tag}.wav"
                 with open(target, "wb") as f:
                     f.write(selected["bytes"])
                 logging_utils.log_action("export", st.session_state.studio_filename, selected["sr"],
