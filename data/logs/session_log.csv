@@ -1,4 +1,13 @@
-timestamp,source_filename,sample_rate,duration_sec,num_bands,bands_applied,processed_filename
-2026-09-08T23:58:10,car.mp3,48000,18.72,0,[],
-2026-09-09T00:18:25,car.mp3,48000,18.72,0,[],
-2026-09-09T00:53:32,car.mp3,48000,18.72,0,[],
+timestamp,action_type,source_filename,sample_rate,duration_sec,details,output_filename
+2026-09-24T20:47:03,load,iphone-2.mp3,44100,26.541,{},
+2026-09-24T20:47:44,frequency_edit,iphone-2.mp3,44100,26.541,"{""operation"": ""amplify"", ""low"": 1829.9517784836862, ""high"": 22049.98116155864, ""gain"": 2.0}",
+2026-09-24T20:48:29,mix,iphone-2.mp3,44100,26.541,"{""mixed_with"": ""noised_photograph.mp3"", ""gain"": 1.0}",
+2026-09-24T20:48:41,mix,iphone-2.mp3,44100,28.475,"{""mixed_with"": ""alarm.mp3"", ""gain"": 1.0}",
+2026-09-24T20:49:47,noise_add,iphone-2.mp3,44100,28.475,"{""noise_type"": ""white"", ""snr_db"": 15.0, ""hum_freq"": 50.0}",
+2026-09-24T20:50:33,noise_add,iphone-2.mp3,44100,28.475,"{""noise_type"": ""white"", ""snr_db"": 12.0, ""hum_freq"": 50.0}",
+2026-09-24T20:54:56,load,samsung.mp3,44100,24.687,{},
+2026-09-24T20:55:19,noise_add,samsung.mp3,44100,24.687,"{""noise_type"": ""pink"", ""snr_db"": 12.0, ""hum_freq"": 50.0}",
+2026-09-24T20:55:48,export,samsung.mp3,44100,24.687,"{""format"": ""wav"", ""saved_as"": ""studio_v1_samsung.mp3.wav""}",
+2026-09-24T20:56:25,export,samsung.mp3,44100,24.687,"{""format"": ""wav"", ""saved_as"": ""studio_v1_samsung.mp3.wav""}",
+2026-09-24T20:56:34,load,studio_v1_samsung.mp3.wav,44100,24.687,{},
+2026-09-24T20:57:03,noise_remove,studio_v1_samsung.mp3.wav,44100,24.687,"{""profile_method"": ""auto"", ""reduction_strength"": 1.3, ""floor"": 0.0, ""suppress_transients"": true}",

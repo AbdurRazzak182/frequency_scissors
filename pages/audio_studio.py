@@ -1,0 +1,446 @@
+from pathlib import Path
+
+import numpy as np
+import plotly.graph_objects as go
+import streamlit as st
+
+from utils import audio_utils, storage, audio_player, logging_utils
+
+st.set_page_config(page_title="Audio Studio", page_icon="🎚️", layout="wide")
+
+# ----------------------------------------------------------------------
+# THEME — global look.
+# ----------------------------------------------------------------------
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root{
+  --c-teal:#2dd4bf; --c-blue:#38bdf8; --c-pink:#f43f5e;
+  --c-amber:#f59e0b; --c-purple:#a78bfa;
+}
+
+html, body, [class*="css"]{ font-family:'Space Grotesk', sans-serif; }
+
+[data-testid="stAppViewContainer"]{
+  background:
+    radial-gradient(circle at 12% 8%, rgba(45,212,191,0.14), transparent 40%),
+    radial-gradient(circle at 88% 15%, rgba(167,139,250,0.14), transparent 42%),
+    radial-gradient(circle at 50% 100%, rgba(56,189,248,0.10), transparent 55%),
+    #0a0f1e;
+}
+[data-testid="stHeader"]{ background:transparent; }
+[data-testid="stSidebar"]{
+  background:linear-gradient(180deg, #0d1424 0%, #0a0f1e 100%);
+  border-right:1px solid rgba(148,163,184,0.12);
+}
+
+/* page spacing */
+[data-testid="stAppViewContainer"] .main .block-container{
+  padding-top: 1.6rem;
+  padding-bottom: 2rem;
+}
+
+/* ---- glowing gradient title ---- */
+.studio-hero{
+  font-family:'Poppins', sans-serif; font-weight:800; font-size:2.4rem;
+  background:linear-gradient(90deg, var(--c-teal), var(--c-blue), var(--c-purple), var(--c-pink));
+  background-size:300% auto;
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  animation:studio-shine 8s linear infinite;
+  margin-bottom:0.1rem; letter-spacing:0.5px;
+}
+@keyframes studio-shine{ to{ background-position:300% center; } }
+.studio-sub{ color:#94a3b8; font-size:0.95rem; margin-bottom:1.2rem; }
+
+/* ---- glassy cards for containers ---- */
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  background:linear-gradient(160deg, rgba(30,41,59,0.55), rgba(15,23,42,0.55));
+  border:1px solid rgba(148,163,184,0.15) !important;
+  border-radius:18px !important;
+  box-shadow:0 8px 30px rgba(0,0,0,0.35);
+  backdrop-filter:blur(6px);
+}
+
+/* ---- tabs styled as glowing pills ---- */
+.stTabs [data-baseweb="tab-list"]{ gap:8px; border-bottom:none; }
+.stTabs [data-baseweb="tab"]{
+  background:rgba(30,41,59,0.6); border-radius:999px !important;
+  padding:8px 20px; border:1px solid rgba(148,163,184,0.18);
+  color:#cbd5e1; font-weight:600; transition:all .25s ease;
+}
+.stTabs [aria-selected="true"]{
+  background:linear-gradient(90deg, rgba(45,212,191,0.25), rgba(56,189,248,0.25)) !important;
+  border:1px solid rgba(56,189,248,0.6) !important;
+  box-shadow:0 0 18px rgba(56,189,248,0.35);
+  color:#f8fafc !important;
+}
+
+/* ---- buttons: gradient, glow on hover ---- */
+.stButton>button, .stDownloadButton>button{
+  border-radius:12px !important; border:1px solid rgba(148,163,184,0.25) !important;
+  background:linear-gradient(135deg, rgba(45,212,191,0.15), rgba(56,189,248,0.15)) !important;
+  color:#e2e8f0 !important; font-weight:600 !important; transition:all .2s ease;
+}
+.stButton>button:hover, .stDownloadButton>button:hover{
+  border-color:rgba(56,189,248,0.8) !important;
+  box-shadow:0 0 16px rgba(56,189,248,0.45);
+  transform:translateY(-1px);
+}
+.stButton>button[kind="primary"]{
+  background:linear-gradient(135deg, var(--c-teal), var(--c-blue)) !important;
+  color:#04121a !important; border:none !important;
+}
+.stButton>button[kind="primary"]:hover{ box-shadow:0 0 22px rgba(45,212,191,0.6); }
+
+/* ---- selectbox / slider accents ---- */
+[data-testid="stSlider"] [role="slider"]{ background:var(--c-blue) !important; }
+[data-baseweb="select"]>div{
+  background:rgba(30,41,59,0.6) !important; border-radius:10px !important;
+  border:1px solid rgba(148,163,184,0.2) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ----------------------------------------------------------------------
+# Session state — VERSION HISTORY of the working clip. Editing tools
+# always act on the latest version; the player can preview any version.
+# ----------------------------------------------------------------------
+defaults = {
+    "studio_filename": None,
+    "studio_versions": [],          # list of {label, audio, sr, bytes}
+    "studio_next_version_num": 0,
+    "noise_report": None,
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+def resample_log_uniform(freqs, magnitude_db, n_points=2048, f_min=20.0):
+    f_max = freqs[-1]
+    log_freqs = np.logspace(np.log10(f_min), np.log10(max(f_max, f_min * 2)), n_points)
+    return log_freqs, np.interp(log_freqs, freqs, magnitude_db)
+
+
+def _current():
+    return st.session_state.studio_versions[-1]
+
+
+def _add_version(label_suffix: str, audio: np.ndarray, sr: int, action_type: str, details: dict):
+    num = st.session_state.studio_next_version_num
+    label = f"v{num} · {label_suffix}"
+    entry = {"label": label, "audio": audio, "sr": sr, "bytes": audio_utils.samples_to_wav_bytes(audio, sr)}
+    st.session_state.studio_versions.append(entry)
+    st.session_state.studio_next_version_num += 1
+
+    logging_utils.log_action(
+        action_type=action_type,
+        source_filename=st.session_state.studio_filename,
+        sample_rate=sr,
+        duration_sec=audio_utils.get_duration(audio, sr),
+        details=details,
+    )
+    st.session_state["studio_version_select"] = label
+    st.session_state.noise_report = None
+
+
+def _load_clip(path, display_name):
+    samples, sr = audio_utils.load_audio(path)
+    st.session_state.studio_filename = display_name
+    st.session_state.studio_versions = [{
+        "label": "v0 · Original", "audio": samples, "sr": sr,
+        "bytes": audio_utils.samples_to_wav_bytes(samples, sr),
+    }]
+    st.session_state.studio_next_version_num = 1
+    st.session_state.noise_report = None
+    st.session_state["studio_version_select"] = "v0 · Original"
+    logging_utils.log_action("load", display_name, sr, audio_utils.get_duration(samples, sr), {})
+
+
+def _hex_to_rgba(hex_color: str, alpha: float = 0.12) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _spectrum_fig(samples, sr, color):
+    freqs, mag_db = audio_utils.compute_spectrum(samples, sr)
+    freqs, mag_db = resample_log_uniform(freqs, mag_db)
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(
+        x=freqs, y=mag_db, mode="lines", line=dict(color=color, width=1.5),
+        fill="tozeroy", fillcolor=_hex_to_rgba(color, 0.12),
+    ))
+    fig.update_layout(
+        height=260, margin=dict(l=10, r=10, t=25, b=10),
+        xaxis_title="Frequency (Hz)", yaxis_title="dB",
+        xaxis=dict(type="log", dtick=1, tickformat="~s", gridcolor="rgba(148,163,184,0.1)"),
+        yaxis=dict(gridcolor="rgba(148,163,184,0.1)"),
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+# ----------------------------------------------------------------------
+# Sidebar — audio input only
+# ----------------------------------------------------------------------
+with st.sidebar:
+    st.header("🎵 Audio Input")
+    previous = storage.list_uploaded_files()
+    choice = st.selectbox("Previously uploaded clips", options=["— select —"] + previous, index=0)
+    if choice != "— select —" and st.button("Load selected clip", use_container_width=True):
+        _load_clip(storage.uploaded_file_path(choice), choice)
+        st.rerun()
+
+    st.divider()
+    uploaded = st.file_uploader("...or upload new", type=["wav", "mp3", "ogg", "flac", "m4a", "aac", "aiff"])
+    if uploaded is not None and st.button("Save & load upload", use_container_width=True):
+        saved_path = storage.save_uploaded_file(uploaded)
+        _load_clip(saved_path, saved_path.name)
+        st.rerun()
+
+    if st.session_state.studio_filename is not None:
+        st.divider()
+        st.caption(f"Clip: **{st.session_state.studio_filename}**")
+        st.caption(f"Versions this session: {len(st.session_state.studio_versions)}")
+        if st.button("↺ Start over", use_container_width=True):
+            _load_clip(storage.uploaded_file_path(st.session_state.studio_filename), st.session_state.studio_filename)
+            st.rerun()
+
+    st.divider()
+    st.page_link("pages/history.py", label="📜 Full history", icon="📜")
+
+st.markdown('<div class="studio-hero">🎚️ Audio Studio</div>', unsafe_allow_html=True)
+st.markdown('<div class="studio-sub">Edit, denoise, and mix in any order — every version stays one click away.</div>', unsafe_allow_html=True)
+
+if not st.session_state.studio_versions:
+    st.info("Upload or choose a clip from the sidebar to open the studio.")
+    st.stop()
+
+version_labels = [v["label"] for v in st.session_state.studio_versions]
+if st.session_state.get("studio_version_select") not in version_labels:
+    st.session_state["studio_version_select"] = version_labels[-1]
+
+# ----------------------------------------------------------------------
+# MAIN CONTENT — live spectrum of whatever's selected in the player,
+# then the loop-able tool tabs, then the player.
+# ----------------------------------------------------------------------
+selected = next(v for v in st.session_state.studio_versions if v["label"] == st.session_state["studio_version_select"])
+
+with st.container(border=True):
+    st.markdown(f"**📊 Spectrum — `{selected['label']}`**")
+    st.plotly_chart(_spectrum_fig(selected["audio"], selected["sr"], "#38bdf8"), use_container_width=True, key="studio_top_spectrum")
+
+st.caption(
+    f"🛠️ Editing tools below always act on the **latest** version (`{version_labels[-1]}`) — "
+    "pick any version in the player under the tools just to listen to it."
+)
+
+tab_edit, tab_add_noise, tab_denoise, tab_mix = st.tabs(
+    ["✂️ Frequency Edit", "🔊 Add Noise", "🧹 Detect & Remove Noise", "🎚️ Mix"]
+)
+
+# ============================ TAB 1: Frequency Edit ============================
+with tab_edit:
+    cur = _current()
+    samples, sr = cur["audio"], cur["sr"]
+    nyquist = sr / 2.0
+
+    freqs, mag_db = audio_utils.compute_spectrum(samples, sr)
+    log_freqs, log_mag_db = resample_log_uniform(freqs, mag_db)
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(x=log_freqs, y=log_mag_db, mode="lines", line=dict(color="#2dd4bf", width=1.5)))
+    fig.update_layout(
+        height=230, margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="Frequency (Hz)", yaxis_title="dB",
+        xaxis=dict(type="log", dtick=1, tickformat="~s", gridcolor="rgba(148,163,184,0.1)"),
+        yaxis=dict(gridcolor="rgba(148,163,184,0.1)"),
+        dragmode="select", template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    sel_event = st.plotly_chart(fig, use_container_width=True, key="edit_spectrum", on_select="rerun", selection_mode=("box",))
+
+    low_sel, high_sel = None, None
+    if sel_event is not None:
+        boxes = sel_event.get("selection", {}).get("box", [])
+        if boxes:
+            x_range = boxes[0].get("x", [])
+            if len(x_range) == 2:
+                low_sel, high_sel = sorted(float(v) for v in x_range)
+                low_sel, high_sel = max(low_sel, 0.0), min(high_sel, nyquist)
+
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 1], vertical_alignment="bottom")
+    with c1:
+        if low_sel is not None:
+            st.caption(f"Band: `{low_sel:,.0f}`–`{high_sel:,.0f}` Hz")
+        operation = st.selectbox("Operation", ["Remove band", "Isolate band", "Attenuate band", "Amplify band"], key="e_op", label_visibility="collapsed" if low_sel is not None else "visible")
+    op_key = {"Remove band": "remove", "Isolate band": "isolate", "Attenuate band": "attenuate", "Amplify band": "amplify"}[operation]
+    gain = 1.0
+    with c2:
+        if op_key == "attenuate":
+            gain = st.slider("Attenuation", 0.0, 1.0, 0.3, 0.05, key="e_atten", label_visibility="collapsed")
+        elif op_key == "amplify":
+            gain = st.slider("Amplify ×", 1.0, 10.0, 2.0, 0.5, key="e_amp", label_visibility="collapsed")
+        else:
+            st.caption("No gain needed")
+    with c4:
+        apply_clicked = st.button("✂️ Apply", use_container_width=True, type="primary", key="e_apply", disabled=low_sel is None)
+
+    if not low_sel:
+        st.info("Drag a box on the spectrum above to pick a band.")
+
+    if apply_clicked and low_sel is not None:
+        processed = audio_utils.apply_band_operation(samples, sr, low_sel, high_sel, op_key, gain=gain)
+        _add_version(f"{operation} {low_sel:,.0f}-{high_sel:,.0f}Hz", processed, sr,
+                     "frequency_edit", {"operation": op_key, "low": low_sel, "high": high_sel, "gain": gain})
+        st.rerun()
+
+# ============================ TAB 2: Add Noise ============================
+with tab_add_noise:
+    NOISE_TYPES = {
+        "White (hiss)": "white", "Pink": "pink", "Hum": "hum", "White + Hum": "white+hum",
+        "Drifting": "drift", "Bursts/clicks": "burst",
+    }
+    n1, n2, n3, n4 = st.columns([2, 2, 2, 1], vertical_alignment="bottom")
+    with n1:
+        noise_label = st.selectbox("Noise type", list(NOISE_TYPES.keys()), key="n_type")
+    noise_type = NOISE_TYPES[noise_label]
+    with n2:
+        snr_db = st.slider("SNR (dB)", -10.0, 40.0, 15.0, 1.0, key="n_snr")
+    hum_freq, n_bursts, burst_ms = 50.0, 6, 30.0
+    with n3:
+        if noise_type in ("hum", "white+hum"):
+            hum_freq = st.select_slider("Hum Hz", [50.0, 60.0], value=50.0, key="n_hum")
+        elif noise_type == "burst":
+            n_bursts = st.number_input("Bursts", 1, 30, 6, key="n_nb")
+        else:
+            st.caption(" ")
+    with n4:
+        add_clicked = st.button("🔊 Add", use_container_width=True, type="primary", key="n_add")
+
+    if add_clicked:
+        cur = _current()
+        noisy = audio_utils.add_noise(cur["audio"], cur["sr"], noise_type=noise_type, snr_db=snr_db,
+                                       hum_freq=hum_freq, n_bursts=n_bursts, burst_duration_ms=burst_ms)
+        _add_version(f"+{noise_label} noise", noisy, cur["sr"], "noise_add",
+                     {"noise_type": noise_type, "snr_db": snr_db, "hum_freq": hum_freq})
+        st.rerun()
+
+    st.caption("Only needed for testing — adds noise on top of the latest version above.")
+
+# ============================ TAB 3: Detect & Remove Noise ============================
+with tab_denoise:
+    method_label = st.radio("Noise estimate", ["Automatic", "Adaptive (drifting)", "Manual region"],
+                             horizontal=True, key="d_method")
+    profile_method = {"Automatic": "auto", "Adaptive (drifting)": "adaptive", "Manual region": "region"}[method_label]
+
+    noise_start, noise_end = 0.0, None
+    if profile_method == "region":
+        cur = _current()
+        total_dur = audio_utils.get_duration(cur["audio"], cur["sr"])
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            noise_start = st.number_input("Start (s)", 0.0, total_dur, 0.0, 0.1, key="d_start")
+        with rc2:
+            noise_end = st.number_input("End (s)", 0.0, total_dur, min(0.5, total_dur), 0.1, key="d_end")
+
+    d1, d2, d3 = st.columns([2, 1, 1], vertical_alignment="bottom")
+    with d1:
+        sensitivity = st.slider("Click sensitivity", 1.5, 6.0, 3.0, 0.5, key="d_sens")
+    with d2:
+        analyze_clicked = st.button("🔍 Analyze", use_container_width=True, key="d_analyze")
+
+    if analyze_clicked:
+        cur = _current()
+        st.session_state.noise_report = audio_utils.analyze_noise(
+            cur["audio"], cur["sr"], method=profile_method, noise_start=noise_start,
+            noise_end=noise_end, transient_sensitivity=sensitivity,
+        )
+
+    if st.session_state.noise_report is not None:
+        r = st.session_state.noise_report
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Floor", f"{r['noise_floor_db']:.1f} dB")
+        m2.metric("SNR", f"{r['estimated_snr_db']:.1f} dB")
+        m3.metric("Hiss/hum", "🔴" if r["is_noisy"] else "🟢")
+        m4.metric("Clicks", r["transient_count"])
+
+    rm1, rm2, rm3, rm4 = st.columns([2, 2, 2, 1], vertical_alignment="bottom")
+    with rm1:
+        strength = st.slider("Strength", 0.0, 3.0, 1.3, 0.1, key="d_strength")
+    with rm2:
+        floor = st.slider("Floor kept", 0.0, 0.3, 0.02, 0.01, key="d_floor")
+    with rm3:
+        suppress_transients = st.checkbox("Also suppress clicks", value=True, key="d_suppress")
+    with rm4:
+        remove_clicked = st.button("🧹 Remove", use_container_width=True, type="primary", key="d_remove")
+
+    if remove_clicked:
+        cur = _current()
+        denoised = audio_utils.reduce_noise(
+            cur["audio"], cur["sr"], profile_method=profile_method, noise_start=noise_start, noise_end=noise_end,
+            reduction_strength=strength, floor=floor, suppress_transients=suppress_transients,
+            transient_sensitivity=sensitivity,
+        )
+        _add_version(f"denoise ({profile_method})", denoised, cur["sr"], "noise_remove",
+                     {"profile_method": profile_method, "reduction_strength": strength, "floor": floor,
+                      "suppress_transients": suppress_transients})
+        st.rerun()
+
+# ============================ TAB 4: Mix ============================
+with tab_mix:
+    other_files = [f for f in storage.list_uploaded_files() if f != st.session_state.studio_filename]
+    if not other_files:
+        st.info("No other clips in the workspace to mix in — upload one from the sidebar.")
+    else:
+        m1, m2, m3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+        with m1:
+            mix_choice = st.selectbox("Track to mix in", other_files, key="m_choice")
+        with m2:
+            mix_gain = st.slider("Gain", 0.0, 2.0, 1.0, 0.1, key="m_gain")
+        with m3:
+            mix_clicked = st.button("🎚️ Mix", use_container_width=True, type="primary", key="m_apply")
+
+        if mix_clicked:
+            cur = _current()
+            tmp_path = storage.PROCESSED_DIR / "_studio_working_tmp.wav"
+            audio_utils.save_wav(cur["audio"], cur["sr"], tmp_path)
+            tracks = [{"path": tmp_path, "gain": 1.0}, {"path": storage.uploaded_file_path(mix_choice), "gain": mix_gain}]
+            mixed = audio_utils.mix_audio_files(tracks, target_sr=44100)
+            _add_version(f"+mix {mix_choice}", mixed, 44100, "mix", {"mixed_with": mix_choice, "gain": mix_gain})
+            st.rerun()
+
+# ----------------------------------------------------------------------
+# PLAYER — a normal section placed under the workstation tabs.
+# It scrolls with the page, so nothing can hide behind it.
+# ----------------------------------------------------------------------
+version_labels = [v["label"] for v in st.session_state.studio_versions]
+if st.session_state.get("studio_version_select") not in version_labels:
+    st.session_state["studio_version_select"] = version_labels[-1]
+
+with st.container(border=True, key="player_panel"):
+    bar1, bar3 = st.columns([3, 1.4], vertical_alignment="bottom")
+    with bar1:
+        st.selectbox("🎧 Now Playing", options=version_labels, key="studio_version_select")
+    selected = next(v for v in st.session_state.studio_versions if v["label"] == st.session_state["studio_version_select"])
+    version_tag = selected["label"].split(" · ")[0]
+
+    with bar3:
+        dcol1, dcol2 = st.columns(2)
+        with dcol1:
+            st.download_button("⬇️ Download", data=selected["bytes"],
+                                file_name=f"{st.session_state.studio_filename}_{version_tag}.wav",
+                                mime="audio/wav", use_container_width=True, key="player_dl")
+        with dcol2:
+            if st.button("💾 Save", use_container_width=True, key="player_save"):
+                target = storage.UPLOADS_DIR / f"studio_{version_tag}_{st.session_state.studio_filename}.wav"
+                with open(target, "wb") as f:
+                    f.write(selected["bytes"])
+                logging_utils.log_action("export", st.session_state.studio_filename, selected["sr"],
+                                          audio_utils.get_duration(selected["audio"], selected["sr"]),
+                                          {"format": "wav", "saved_as": target.name})
+                st.toast(f"Saved {target.name}")
+
+    peaks = audio_utils.compute_peaks(selected["audio"], num_points=300)
+    audio_player.render_audio_player(selected["bytes"], selected["label"], peaks, key="studio_player", height=210)
