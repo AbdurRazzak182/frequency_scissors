@@ -7,7 +7,7 @@ import streamlit as st
 
 from utils import audio_utils, storage, audio_player, logging_utils
 
-st.set_page_config(page_title="Audio Studio", page_icon="🎚️", layout="wide")
+st.set_page_config(page_title="Audio Frequency Processing Studio", page_icon="🎚️", layout="wide")
 
 # ----------------------------------------------------------------------
 # THEME — global look.
@@ -341,9 +341,9 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    st.page_link("pages/history.py", label="📜 Full history", icon="📜")
+    st.page_link("pages/history.py", label="Full history", icon="📜")
 
-st.markdown('<div class="studio-hero">🎚️ Audio Studio</div>', unsafe_allow_html=True)
+st.markdown('<div class="studio-hero">🎚️ Audio Frequency Processing Studio</div>', unsafe_allow_html=True)
 st.markdown('<div class="studio-sub">Edit, denoise, and mix in any order — every version stays one click away.</div>', unsafe_allow_html=True)
 
 if not st.session_state.studio_versions:

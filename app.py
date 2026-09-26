@@ -7,7 +7,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("✂️ Frequency Scissors")
+st.title("Audio Frequency Processing")
 
 st.markdown(
     ":violet-badge[:material/star: An interactive frequency-domain audio editing playground] "
@@ -17,40 +17,11 @@ st.markdown(
 st.header("🎯 About This Project")
 st.write(
     """
-    **Frequency Scissors** is an audio-processing tool that lets you
-    upload or record a short audio clip, visualize its **waveform**
-    and **frequency spectrum**, and interactively "cut" selected
-    frequency ranges using draggable frequency-band scissors.
-
-    The modified audio is reconstructed using the **inverse Fourier
-    transform (IFFT)**, so you can immediately hear how removing,
-    attenuating, or amplifying different frequency bands changes the
-    sound. The original and processed audio are compared side by
-    side — waveform plots, spectra, and listening tests — to
-    demonstrate practical frequency-domain filtering and audio
-    editing.
-
-    Under the hood, every clip is kept as a raw **NumPy** array in
-    memory, and a **Pandas** DataFrame logs metadata for every clip
-    and every set of cuts you apply (sample rate, duration, and the
-    history of frequency bands you've cut).
+    **Audio Frequency Processing is a browser-based audio editing workstation built with Streamlit that lets you manipulate sound in the frequency domain. You can upload an audio clip, visualize its waveform and frequency spectrum, and remove, attenuate, amplify, or isolate specific frequency bands using FFT-based reconstruction. The project also includes a full noise-handling pipeline — you can inject stationary, drifting, or burst/click noise for testing, then detect and clean it out using STFT-based spectral subtraction and transient detection. A multi-track mixer lets you combine several clips with individual volume control, and every edit is tracked as a version with an automatic before/after comparison panel so changes can be verified visually and audibly. A session-wide history log records every action taken. Altogether, it works as a lightweight, interactive tool for exploring and demonstrating frequency-domain audio processing concepts.
     """
 )
 
-st.header("📁 Project Progression")
-st.info(
-    "✅**Phase 1 · Data Ingestion & (Time,Frequency)-Domain Visualization."
-)
 
-st.info(
-    "✅ **Phase 2 · The Interactive Scissors (UI)."
-)
-st.info(
-    "✅ **Phase 3 · Reconstruction & changed frequency spectrum visualization with the listening again."
-)
-st.info(
-    "✅ **Phase 4 · Comparing with the original ,waveform plots,spectra,demonstration ,Testing & Output."
-)
 
 st.header("👋 About Developers")
 dev1,dev2 = st.columns(2)
