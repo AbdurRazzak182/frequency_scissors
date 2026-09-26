@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from utils import audio_utils, storage, audio_player, logging_utils
@@ -147,6 +148,13 @@ def _selected():
     return st.session_state.studio_versions[-1]
 
 
+def _version_by_label(label):
+    for v in st.session_state.studio_versions:
+        if v["label"] == label:
+            return v
+    return None
+
+
 def _add_version(suffix: str, audio: np.ndarray, sr: int, action_type: str, details: dict, parent: dict = None):
     parent = parent or _selected()
     num = st.session_state.studio_next_version_num
@@ -158,6 +166,7 @@ def _add_version(suffix: str, audio: np.ndarray, sr: int, action_type: str, deta
         "label": label, "name": new_name, "audio": audio, "sr": sr,
         "bytes": audio_utils.samples_to_wav_bytes(audio, sr),
         "version_num": num, "parent_label": parent["label"],
+        "action_type": action_type, "action_details": dict(details or {}),
     }
     st.session_state.studio_versions.append(entry)
     st.session_state.studio_next_version_num += 1
@@ -185,6 +194,7 @@ def _load_clip(path, display_name):
         "label": v0_label, "name": base_name, "audio": samples, "sr": sr,
         "bytes": audio_utils.samples_to_wav_bytes(samples, sr),
         "version_num": 0, "parent_label": None,
+        "action_type": "load", "action_details": {},
     }]
     st.session_state.studio_next_version_num = 1
     st.session_state.noise_report = None
@@ -196,6 +206,94 @@ def _hex_to_rgba(hex_color: str, alpha: float = 0.12) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _rms_db(samples: np.ndarray) -> float:
+    if samples is None or len(samples) == 0:
+        return float("-inf")
+    rms = np.sqrt(np.mean(np.square(samples.astype(np.float64))) + 1e-12)
+    return float(20.0 * np.log10(rms + 1e-12))
+
+
+def _band_energy_db(samples: np.ndarray, sr: int, low: float, high: float) -> float:
+    freqs, mag_db = audio_utils.compute_spectrum(samples, sr)
+    mask = (freqs >= low) & (freqs <= high)
+    if not mask.any():
+        return float("nan")
+    return float(np.mean(mag_db[mask]))
+
+
+def _overlay_spectrum_fig(before_audio, before_sr, after_audio, after_sr, band=None):
+    """Before vs after spectrum, overlaid, with a delta(dB) panel underneath
+    so a viewer can SEE exactly which frequencies were cut/boosted/removed."""
+    bf, bmag = audio_utils.compute_spectrum(before_audio, before_sr)
+    af, amag = audio_utils.compute_spectrum(after_audio, after_sr)
+    bf_log, bmag_log = resample_log_uniform(bf, bmag)
+    af_log, amag_log = resample_log_uniform(af, amag)
+    # common grid so the delta is well defined even if sample rates differ
+    common_freqs = bf_log if len(bf_log) <= len(af_log) else af_log
+    b_on_common = np.interp(common_freqs, bf_log, bmag_log)
+    a_on_common = np.interp(common_freqs, af_log, amag_log)
+    delta = a_on_common - b_on_common
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, row_heights=[0.66, 0.34], vertical_spacing=0.06,
+        subplot_titles=("Spectrum — before vs after", "Δ change (after − before, dB)"),
+    )
+    fig.add_trace(go.Scattergl(x=bf_log, y=bmag_log, mode="lines", name="Before",
+                                line=dict(color="#94a3b8", width=1.6, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scattergl(x=af_log, y=amag_log, mode="lines", name="After",
+                                line=dict(color="#2dd4bf", width=2.0),
+                                fill="tonexty", fillcolor="rgba(45,212,191,0.10)"), row=1, col=1)
+
+    pos = np.where(delta > 0, delta, 0.0)
+    neg = np.where(delta < 0, delta, 0.0)
+    fig.add_trace(go.Scattergl(x=common_freqs, y=pos, mode="lines", name="Boosted",
+                                line=dict(color="#22c55e", width=0.5), fill="tozeroy",
+                                fillcolor="rgba(34,197,94,0.45)"), row=2, col=1)
+    fig.add_trace(go.Scattergl(x=common_freqs, y=neg, mode="lines", name="Cut / removed",
+                                line=dict(color="#f43f5e", width=0.5), fill="tozeroy",
+                                fillcolor="rgba(244,63,94,0.45)"), row=2, col=1)
+    fig.add_hline(y=0, line=dict(color="rgba(148,163,184,0.35)", width=1), row=2, col=1)
+
+    if band is not None:
+        low, high = band
+        for r in (1, 2):
+            fig.add_vrect(x0=max(low, 1.0), x1=max(high, 1.0), row=r, col=1,
+                          fillcolor="rgba(56,189,248,0.12)", line_width=0)
+
+    fig.update_xaxes(type="log", dtick=1, tickformat="~s", gridcolor="rgba(148,163,184,0.1)", row=2, col=1,
+                      title_text="Frequency (Hz)")
+    fig.update_xaxes(type="log", dtick=1, tickformat="~s", gridcolor="rgba(148,163,184,0.1)", row=1, col=1)
+    fig.update_yaxes(title_text="dB", gridcolor="rgba(148,163,184,0.1)", row=1, col=1)
+    fig.update_yaxes(title_text="Δ dB", gridcolor="rgba(148,163,184,0.1)", row=2, col=1)
+    fig.update_layout(
+        height=430, margin=dict(l=10, r=10, t=36, b=10),
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="right", x=1),
+    )
+    return fig
+
+
+def _overlay_waveform_fig(before_audio, before_sr, after_audio, after_sr):
+    """Before vs after waveform envelopes, overlaid on a shared time axis —
+    useful for SEEING added bursts/hum or a hiss floor dropping out."""
+    bt, bv = audio_utils.downsample_waveform(before_audio, before_sr, max_points=2000)
+    at, av = audio_utils.downsample_waveform(after_audio, after_sr, max_points=2000)
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(x=bt, y=bv, mode="lines", name="Before",
+                                line=dict(color="#94a3b8", width=1.0)))
+    fig.add_trace(go.Scattergl(x=at, y=av, mode="lines", name="After",
+                                line=dict(color="#f59e0b", width=1.0)))
+    fig.update_layout(
+        height=260, margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="Time (s)", yaxis_title="Amplitude",
+        xaxis=dict(gridcolor="rgba(148,163,184,0.1)"),
+        yaxis=dict(gridcolor="rgba(148,163,184,0.1)", range=[-1.05, 1.05]),
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
 
 
 def _spectrum_fig(samples, sr, color):
@@ -489,3 +587,74 @@ with st.container(border=True, key="player_panel"):
 
     peaks = audio_utils.compute_peaks(selected["audio"], num_points=300)
     audio_player.render_audio_player(selected["bytes"], selected["label"], peaks, key="studio_player", height=210)
+
+# ----------------------------------------------------------------------
+# BEFORE / AFTER COMPARISON — the "proof" box. Shows the version
+# currently selected in the player against the version it was built
+# from, so a viewer can visually (and audibly) confirm that whatever
+# was just done — attenuate/amplify/isolate/remove a band, add a test
+# noise, or clean noise out — actually happened.
+# ----------------------------------------------------------------------
+with st.container(border=True, key="compare_panel"):
+    # st.markdown("**🔬 Before / After — Proof of the Edit**")
+
+    parent = _version_by_label(selected.get("parent_label")) if selected.get("parent_label") else None
+    action_type = selected.get("action_type")
+    action_details = selected.get("action_details", {}) or {}
+
+    if parent is None:
+        st.caption(
+            "This is the original, unedited clip — apply a frequency edit, add noise, "
+            "remove noise, or mix in a track to see a before/after comparison here."
+        )
+    else:
+        action_label = logging_utils.ACTION_LABELS.get(action_type, action_type or "Edit")
+        action_desc = logging_utils.describe_action(action_type, action_details)
+        st.caption(f"{action_label}: **{action_desc}**")
+
+        # pcol, acol = st.columns(2)
+        # with pcol:
+        #     st.markdown(f"⬅️ **Before** — `{parent['label']}`")
+        #     audio_player.render_audio_player(
+        #         parent["bytes"], parent["label"],
+        #         audio_utils.compute_peaks(parent["audio"], num_points=200),
+        #         key="compare_before_player", height=160,
+        #     )
+        # with acol:
+        #     st.markdown(f"➡️ **After** — `{selected['label']}`")
+        #     audio_player.render_audio_player(
+        #         selected["bytes"], selected["label"],
+        #         audio_utils.compute_peaks(selected["audio"], num_points=200),
+        #         key="compare_after_player", height=160,
+        #     )
+
+        band = None
+        if action_type == "frequency_edit" and action_details.get("low") is not None:
+            band = (float(action_details["low"]), float(action_details["high"]))
+
+        cmp_spectrum_tab, cmp_wave_tab = st.tabs(["📊 Spectrum overlay", "🌊 Waveform overlay"])
+        with cmp_spectrum_tab:
+            st.plotly_chart(
+                _overlay_spectrum_fig(parent["audio"], parent["sr"], selected["audio"], selected["sr"], band=band),
+                use_container_width=True, key="compare_spectrum_fig",
+            )
+            if band is not None:
+                before_band_db = _band_energy_db(parent["audio"], parent["sr"], *band)
+                after_band_db = _band_energy_db(selected["audio"], selected["sr"], *band)
+                st.caption(
+                    f"Energy in edited band `{band[0]:,.0f}`–`{band[1]:,.0f}` Hz: "
+                    f"**{before_band_db:.1f} dB → {after_band_db:.1f} dB** "
+                    f"({after_band_db - before_band_db:+.1f} dB)"
+                )
+            else:
+                st.caption(
+                    f"Overall level: **{_rms_db(parent['audio']):.1f} dB → {_rms_db(selected['audio']):.1f} dB** "
+                    f"({_rms_db(selected['audio']) - _rms_db(parent['audio']):+.1f} dB). "
+                    "Green = frequencies that got louder, red = frequencies that got quieter/removed."
+                )
+        with cmp_wave_tab:
+            st.plotly_chart(
+                _overlay_waveform_fig(parent["audio"], parent["sr"], selected["audio"], selected["sr"]),
+                use_container_width=True, key="compare_waveform_fig",
+            )
+            st.caption("Gray = before, amber = after — line up bursts, hum ripple, or hiss floor by eye.")
